@@ -133,6 +133,76 @@ function __show_projects_by_revision() {
     echo "${PR_MAPPING[$_REVISION]}" | xargs -n1
 }
 
+# > Get attribute value by its name
+# @Param
+#   1st: manifest file
+#   2nd: name of a attribute
+function __get_attribute() {
+    local _MF_FILE=
+    local _ATTR=
+    local _EXPR=
+    local _VALUES=
+
+    _MF_FILE="$1"
+    _ATTR="$2"
+    _EXPR="//project/@$_ATTR"
+    _VALUES=$(xmllint --xpath "$_EXPR" $_MF_FILE 2> /dev/null || true)
+    if [ -n "$_VALUES" ]; then
+        _VALUES=$(echo "$_VALUES" | \
+            xargs -n1 | \
+            cut -d"=" -f2 | \
+            sort)
+    fi
+
+    echo "$_VALUES"
+}
+
+# > Get revision of a project by its name
+# @Param
+#   1st: manifest file
+#   2nd: name of a project
+function __get_revision_by_project() {
+    local _MF_FILE=
+    local _PJ_NAME=
+    local _EXPR=
+    local _REVISION=
+
+    _MF_FILE="$1"
+    _PJ_NAME="$2"
+    _EXPR="//project[@name=\"$_PJ_NAME\"]/@revision"
+    _REVISION=$(xmllint --xpath "$_EXPR" $_MF_FILE 2> /dev/null || true)
+    if [ -n "$_REVISION" ]; then
+        _REVISION=$(echo "$_REVISION" | \
+            cut -d"=" -f2 | \
+            xargs)
+    fi
+
+    echo "$_REVISION"
+}
+
+# > Get group of a project by its name
+# @Param
+#   1st: manifest file
+#   2nd: name of a project
+function __get_group_by_project() {
+    local _MF_FILE=
+    local _PJ_NAME=
+    local _EXPR=
+    local _GROUP=
+
+    _MF_FILE="$1"
+    _PJ_NAME="$2"
+    _EXPR="//project[@name=\"$_PJ_NAME\"]/@groups"
+    _GROUP=$(xmllint --xpath "$_EXPR" $_MF_FILE 2> /dev/null || true)
+    if [ -n "$_GROUP" ]; then
+        _GROUP=$(echo "$_GROUP" | \
+            cut -d"=" -f2 | \
+            xargs)
+    fi
+
+    echo "$_GROUP"
+}
+
 function __decompose_manifest() {
     local _MF_FILE=
 
@@ -351,6 +421,135 @@ function __fork() {
     return $_RET_VALUE
 }
 
+function __print_usage_of_extract() {
+    cat << EOU
+SYSNOPSIS
+    1. $SCRIPT_NAME extract -f <MANIFEST> [-p|--project]
+
+DESCRIPTION
+    It extracts following information for Git projects from a static manifest
+    file.
+      1) Project name
+      2) SHA-1 revision value
+      3) Groups value
+
+OPTIONS
+    -f|--file
+        Specify the path of a static manifest file.
+
+    -p|--project
+        Extract names of Git projects only.
+EOU
+}
+
+function __extract() {
+    local _SUB_CMD=
+    local _MF_FILE=
+    local _PJ_ONLY_MARK=
+    local _PJ_NAMES=
+    local _PJ_REVISIONS=
+    local _REVISION=
+    local _GROUP=
+    local _REVSION_MAPPING=
+    local _GROUP_MAPPING=
+    local _LEN_PJ=
+    local _LEN_REV=
+    local _LEN_GROUP=
+    local _LEN_SUM=
+    local _RET_VALUE=
+
+    declare -A _REVSION_MAPPING
+    declare -A _GROUP_MAPPING
+
+    _SUB_CMD="extract"
+    _PJ_ONLY_MARK="false"
+    _RET_VALUE=0
+
+    if [ $# -eq 0 ]; then
+        eval "${CMD_USAGE_MAPPING[$_SUB_CMD]}"
+        return $_RET_VALUE
+    fi
+
+    _ARGS=$(getopt ${CMD_OPTION_MAPPING[$_SUB_CMD]} -- $@)
+    eval set -- "$_ARGS"
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -f|--file)
+                _MF_FILE="$2"
+                ;;
+            -p|--project)
+                _PJ_ONLY_MARK="true"
+                ;;
+            -h|--help)
+                eval "${CMD_USAGE_MAPPING[$_SUB_CMD]}"
+                return $_RET_VALUE
+                ;;
+            --)
+                shift
+                break
+                ;;
+        esac
+        shift
+    done
+
+    if [ -f "$_MF_FILE" ]; then
+        _PJ_NAMES=$(__get_attribute "$_MF_FILE" "name")
+        if eval "$_PJ_ONLY_MARK"; then
+            for I in $(echo "$_PJ_NAMES"); do
+                I=$(echo "$I" | sed "s|.git$||g")
+                echo "$I"
+            done
+        else
+            _PJ_REVISIONS=$(__get_attribute "$_MF_FILE" "revision")
+            if [ $(echo "$_PJ_NAMES" | wc -w) -eq \
+                $(echo "$_PJ_REVISIONS" | wc -w) ]; then
+                _LEN_PJ=0
+                _LEN_REV=0
+                _LEN_GROUP=0
+                for I in $(echo "$_PJ_NAMES"); do
+                    _REVISION=$(__get_revision_by_project "$_MF_FILE" "$I")
+                    _GROUP=$(__get_group_by_project "$_MF_FILE" "$I")
+
+                    I=$(echo "$I" | sed "s|.git$||g")
+                    _REVSION_MAPPING[$I]="$_REVISION"
+                    _GROUP_MAPPING[$I]="$_GROUP"
+
+                    if [ "$_LEN_PJ" -lt "${#I}" ]; then
+                        _LEN_PJ=${#I}
+                    fi
+                    if [ "$_LEN_REV" -lt "${#_REVISION}" ]; then
+                        _LEN_REV=${#_REVISION}
+                    fi
+                    if [ "$_LEN_GROUP" -lt "${#_GROUP}" ]; then
+                        _LEN_GROUP=${#_GROUP}
+                    fi
+                done
+
+                _LEN_SUM=$((_LEN_PJ + 2 + _LEN_REV + 2 + _LEN_GROUP))
+                printf "%${_LEN_SUM}s\n" "-" | sed "s| |-|g"
+                printf "%-${_LEN_PJ}s  %-${_LEN_REV}s  %-${_LEN_GROUP}s\n" \
+                    "Project" "Revision" "Group"
+                printf "%${_LEN_SUM}s\n" "-" | sed "s| |-|g"
+                for I in $(echo "$_PJ_NAMES"); do
+                    I=$(echo "$I" | sed "s|.git$||g")
+                    printf "%-${_LEN_PJ}s  %-${_LEN_REV}s  %-${_LEN_GROUP}s\n" \
+                        "$I" "${_REVSION_MAPPING[$I]}" "${_GROUP_MAPPING[$I]}"
+                done
+                printf "%${_LEN_SUM}s\n" "-" | sed "s| |-|g"
+            else
+                log_e "not a valid static file: $_MF_FILE"
+            fi
+        fi
+    else
+        log_e "file not found: $_MF_FILE"
+        _RET_VALUE=$ERROR_CODE_FILE_NOT_FOUND
+    fi
+
+    return $_RET_VALUE
+}
+
+
+
 function __print_cli_usage() {
     cat << EOU
 Usage: $SCRIPT_NAME [-v] <SUB_COMMAND> [<args>]
@@ -363,6 +562,8 @@ There are sub-commands supported by this manifest CLI tool.
    Classifies Git projects according to their revisions.
 2. fork
    Creates a configuration file for branch creation.
+3. extract
+   Extracts information for Git projects from a static manifest file.
 
 To show usage of a <SUB_COMMAND>, use following command:
    manifest_cli help <SUB_COMMAND>
@@ -381,16 +582,20 @@ function init_command_context() {
     # Maps sub-commands to their usage
     CMD_USAGE_MAPPING["classify"]="__print_usage_of_classify"
     CMD_USAGE_MAPPING["fork"]="__print_usage_of_fork"
+    CMD_USAGE_MAPPING["extract"]="__print_usage_of_extract"
 
     # Maps sub-commands to their options
     CMD_OPTION_MAPPING["classify"]="-o f:h \
         -l file:,help"
     CMD_OPTION_MAPPING["fork"]="-o f:b:o:h \
         -l file:,branch:,batch-mode,output:,help"
+    CMD_OPTION_MAPPING["extract"]="-o f:ph \
+        -l file:,project,help"
 
     # Maps sub-commands to the implementations of their functions
     CMD_FUNCTION_MAPPING["classify"]="__classify"
     CMD_FUNCTION_MAPPING["fork"]="__fork"
+    CMD_FUNCTION_MAPPING["extract"]="__extract"
 }
 
 function run_cli() {
